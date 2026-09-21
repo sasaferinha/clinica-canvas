@@ -29,7 +29,7 @@ export async function readBoard(): Promise<{
   return {
     board: validateBoard(stored.board),
     revision: stored.revision as number,
-    etag: result.blob.etag,
+    etag: result.blob.etag.replace(/^W\//, ''),
   };
 }
 
