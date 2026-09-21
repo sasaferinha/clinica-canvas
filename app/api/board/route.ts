@@ -1,4 +1,44 @@
-import {database} from '@/lib/storage';
-import {validateBoard} from '@/lib/board';
-export async function GET(){try{const row=await database().prepare('SELECT payload, revision FROM canvases WHERE id = ?').bind('main').first<{payload:string;revision:number}>();return Response.json({board:row?JSON.parse(row.payload):null,revision:row?.revision??0},{headers:{'Cache-Control':'no-store'}});}catch(e){console.error('Board read failed',e);return Response.json({error:'Mapa indisponível'},{status:503});}}
-export async function PUT(req:Request){if(req.headers.get('origin')&&new URL(req.url).origin!==req.headers.get('origin'))return Response.json({error:'Origem inválida'},{status:403});try{const text=await req.text();if(text.length>1500000)return Response.json({error:'Mapa muito grande'},{status:413});const data=JSON.parse(text);const board=validateBoard(data.board);if(!Number.isInteger(data.revision)||data.revision<0)return Response.json({error:'Versão inválida'},{status:400});const db=database();const result=data.revision===0?await db.prepare('INSERT OR IGNORE INTO canvases (id,payload,revision) VALUES (?,?,1)').bind('main',JSON.stringify(board)).run():await db.prepare('UPDATE canvases SET payload = ?, revision = revision + 1 WHERE id = ? AND revision = ?').bind(JSON.stringify(board),'main',data.revision).run();if(!result.meta.changes)return Response.json({error:'O mapa mudou em outra sessão'},{status:409});return Response.json({revision:data.revision+1});}catch(e){console.error('Board save failed',e);return Response.json({error:'Não foi possível salvar'},{status:400});}}
+import { validateBoard } from '@/lib/board';
+import { BoardConflictError, readBoard, saveBoard } from '@/lib/storage';
+
+export async function GET() {
+  try {
+    const { board, revision } = await readBoard();
+    return Response.json({ board, revision }, { headers: { 'Cache-Control': 'no-store' } });
+  } catch (error) {
+    console.error('Board read failed', error);
+    return Response.json({ error: 'Mapa indisponível' }, { status: 503 });
+  }
+}
+
+export async function PUT(request: Request) {
+  const origin = request.headers.get('origin');
+  if (origin && origin !== new URL(request.url).origin) {
+    return Response.json({ error: 'Origem inválida' }, { status: 403 });
+  }
+
+  let board;
+  let revision;
+  try {
+    const text = await request.text();
+    if (text.length > 1_500_000) {
+      return Response.json({ error: 'Mapa muito grande' }, { status: 413 });
+    }
+    const data = JSON.parse(text);
+    board = validateBoard(data.board);
+    revision = data.revision;
+    if (!Number.isInteger(revision) || revision < 0) throw new Error('Versão inválida');
+  } catch {
+    return Response.json({ error: 'Mapa inválido' }, { status: 400 });
+  }
+
+  try {
+    return Response.json({ revision: await saveBoard(board, revision) });
+  } catch (error) {
+    if (error instanceof BoardConflictError) {
+      return Response.json({ error: error.message }, { status: 409 });
+    }
+    console.error('Board save failed', error);
+    return Response.json({ error: 'Não foi possível salvar' }, { status: 503 });
+  }
+}
